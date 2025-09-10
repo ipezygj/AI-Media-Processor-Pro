@@ -102,4 +102,9 @@ Click the "▶️ Start Queue" button at the bottom to begin processing all jobs
 License
 This project is licensed under the GNU General Public License v3.0. This is required due to the licensing of core components like FFmpeg. This means if you distribute this software, you must also make the source code available.
 
+Crypto donations (eth,btc,bnb etc)
+0xeEADef524e207930e9dEa674e441240d9DaF4689
+
+Thanks :)
+
 
