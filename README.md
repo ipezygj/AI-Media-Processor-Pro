@@ -97,6 +97,14 @@ Repeat for any other videos you want to process.
 
 Click the "▶️ Start Queue" button at the bottom to begin processing all jobs in the list.
 
+## 💖 Support the Project
+
+If you find this application useful and want to support its continued development, thank you! Every little bit helps and is greatly appreciated.
+
+* **Bitcoin (BTC):** 0xeEADef524e207930e9dEa674e441240d9DaF4689
+* Others coins too ** 0xeEADef524e207930e9dEa674e441240d9DaF4689
+---
+*(**Note**: You can also add links to other platforms here that are popular for receiving support, such as Ko-fi, or by enabling the native GitHub Sponsors feature on your repository.)*
 
 
 License
