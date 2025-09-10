@@ -1,4 +1,3 @@
-Of course. Here is a professional and detailed README file for your project. You can copy and paste this directly into the README.md file on your GitHub repository.
 
 AI Media Processor Pro
 A powerful desktop application for AI-powered audio processing, including a 4-stem mixer, karaoke video generation, and advanced audio effects. This tool allows users to process videos directly from YouTube or local files to create custom audio mixes, instrumental tracks, or full-featured karaoke videos with word-by-word synchronized lyrics.
