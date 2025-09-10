@@ -1,0 +1,9 @@
+customtkinter
+yt-dlp
+ffmpeg-python
+demucs
+torch
+torchaudio
+torchvision
+soundfile
+stable-ts
