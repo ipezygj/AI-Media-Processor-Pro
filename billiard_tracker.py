@@ -251,20 +251,36 @@ class BilliardTracker:
     # ==================== DETECTION ====================
 
     def _detect_table_mask(self, hsv_frame):
-        """Create a mask of the table felt area."""
+        """Create a tight mask of the table felt area using the largest green contour."""
         table_mask = cv2.inRange(hsv_frame, TABLE_GREEN_LOWER, TABLE_GREEN_UPPER)
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
         table_mask = cv2.morphologyEx(table_mask, cv2.MORPH_CLOSE, kernel)
-        table_mask = cv2.dilate(table_mask, kernel, iterations=2)
 
-        # Find table bounding box from largest contour
+        # Find the largest green contour = the table playing surface
         contours, _ = cv2.findContours(table_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if contours:
-            largest = max(contours, key=cv2.contourArea)
-            self.table_bbox = cv2.boundingRect(largest)
-            self._update_pocket_positions()
+        if not contours:
+            return table_mask
 
-        return table_mask
+        largest = max(contours, key=cv2.contourArea)
+        frame_area = hsv_frame.shape[0] * hsv_frame.shape[1]
+
+        # Table should be at least 10% of the frame
+        if cv2.contourArea(largest) < frame_area * 0.10:
+            return table_mask
+
+        # Create a tight contour-based mask (not just bounding box)
+        tight_mask = np.zeros(table_mask.shape, dtype=np.uint8)
+        cv2.drawContours(tight_mask, [largest], -1, 255, -1)
+
+        # Erode slightly to exclude rails/cushions
+        erode_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+        tight_mask = cv2.erode(tight_mask, erode_kernel, iterations=1)
+
+        self.table_bbox = cv2.boundingRect(largest)
+        self._table_contour = largest
+        self._update_pocket_positions()
+
+        return tight_mask
 
     def _update_pocket_positions(self):
         """Calculate pocket positions from table bounding box."""
@@ -278,30 +294,85 @@ class BilliardTracker:
         self.pocket_radius = max(20, int(min(tw, th) * 0.06))
 
     def _find_circles(self, gray_frame, mask):
-        """Detect circular shapes using HoughCircles."""
+        """Detect circular shapes using HoughCircles with strict filtering."""
         masked_gray = cv2.bitwise_and(gray_frame, gray_frame, mask=mask)
         blurred = cv2.GaussianBlur(masked_gray, (9, 9), 2)
+
         circles = cv2.HoughCircles(
             blurred, cv2.HOUGH_GRADIENT, dp=1.2,
-            minDist=self.min_ball_radius * 2,
-            param1=50, param2=30,
+            minDist=self.min_ball_radius * 3,  # balls can't overlap
+            param1=60,   # higher = stricter edge detection
+            param2=40,   # higher = fewer false circles
             minRadius=self.min_ball_radius,
             maxRadius=self.max_ball_radius,
         )
-        if circles is not None:
-            return np.round(circles[0]).astype(int)
-        return []
+        if circles is None:
+            return []
+
+        candidates = np.round(circles[0]).astype(int)
+
+        # Filter 1: Must be inside the table mask
+        valid = []
+        for (x, y, r) in candidates:
+            if 0 <= y < mask.shape[0] and 0 <= x < mask.shape[1]:
+                if mask[y, x] > 0:
+                    valid.append((x, y, r))
+
+        if len(valid) < 2:
+            return valid
+
+        # Filter 2: Size consistency — reject circles that are far from the median size
+        radii = [r for (_, _, r) in valid]
+        median_r = np.median(radii)
+        size_filtered = [
+            (x, y, r) for (x, y, r) in valid
+            if abs(r - median_r) <= median_r * 0.5
+        ]
+
+        return size_filtered if size_filtered else valid
+
+    def _is_on_felt(self, hsv_frame, x, y, radius):
+        """Check if the area around a circle is on green felt (not a random object)."""
+        h, w = hsv_frame.shape[:2]
+        # Sample a ring around the ball
+        outer_r = int(radius * 1.8)
+        inner_r = int(radius * 1.2)
+        y1, y2 = max(0, y - outer_r), min(h, y + outer_r)
+        x1, x2 = max(0, x - outer_r), min(w, x + outer_r)
+        roi = hsv_frame[y1:y2, x1:x2]
+        if roi.size == 0:
+            return False
+
+        # Create ring mask
+        ring_mask = np.zeros(roi.shape[:2], dtype=np.uint8)
+        center = (outer_r, outer_r)
+        cy_local, cx_local = roi.shape[0] // 2, roi.shape[1] // 2
+        cv2.circle(ring_mask, (cx_local, cy_local), outer_r, 255, -1)
+        cv2.circle(ring_mask, (cx_local, cy_local), inner_r, 0, -1)
+
+        # Check how much of the ring is green felt
+        green_mask = cv2.inRange(roi, TABLE_GREEN_LOWER, TABLE_GREEN_UPPER)
+        green_in_ring = cv2.bitwise_and(green_mask, ring_mask)
+        ring_total = cv2.countNonZero(ring_mask)
+        if ring_total == 0:
+            return False
+        green_ratio = cv2.countNonZero(green_in_ring) / ring_total
+        return green_ratio > 0.3  # At least 30% of surrounding area is green felt
 
     def _classify_ball(self, hsv_frame, x, y, radius):
-        """Classify a detected circle by its dominant color."""
+        """Classify a detected circle by its dominant color with minimum threshold."""
         sample_r = max(radius // 2, 3)
         h, w = hsv_frame.shape[:2]
         roi = hsv_frame[max(0, y-sample_r):min(h, y+sample_r),
                         max(0, x-sample_r):min(w, x+sample_r)]
         if roi.size == 0:
-            return "unknown", (128, 128, 128)
+            return None, None  # reject
 
-        best_match, best_score, best_display = "unknown", 0, (128, 128, 128)
+        total_pixels = roi.shape[0] * roi.shape[1]
+        if total_pixels == 0:
+            return None, None
+
+        best_match, best_score, best_display = None, 0, None
         for color_name, info in BALL_COLORS.items():
             total = np.zeros(roi.shape[:2], dtype=np.uint8)
             for lower, upper in info["ranges"]:
@@ -309,7 +380,48 @@ class BilliardTracker:
             score = cv2.countNonZero(total)
             if score > best_score:
                 best_score, best_match, best_display = score, color_name, info["display"]
+
+        # Minimum match threshold: at least 20% of the ball center must match a color
+        min_match_ratio = 0.20
+        if best_score < total_pixels * min_match_ratio:
+            return None, None  # not a real ball
+
         return best_match, best_display
+
+    def _apply_temporal_filter(self, balls):
+        """Filter out flickering detections — a ball must appear in multiple frames."""
+        # Track how many recent frames each approximate position has been seen
+        if not hasattr(self, "_detection_history"):
+            self._detection_history = {}  # (grid_x, grid_y) -> frame_count
+            self._min_confirm_frames = 3
+
+        grid_size = self.max_ball_radius * 2
+        current_grid = set()
+        confirmed = []
+
+        for ball in balls:
+            gx = ball.x // grid_size
+            gy = ball.y // grid_size
+            key = (gx, gy)
+            current_grid.add(key)
+
+            count = self._detection_history.get(key, 0) + 1
+            self._detection_history[key] = count
+
+            if count >= self._min_confirm_frames:
+                confirmed.append(ball)
+
+        # Decay old detections
+        keys_to_remove = []
+        for key in self._detection_history:
+            if key not in current_grid:
+                self._detection_history[key] -= 1
+                if self._detection_history[key] <= 0:
+                    keys_to_remove.append(key)
+        for key in keys_to_remove:
+            del self._detection_history[key]
+
+        return confirmed
 
     # ==================== TRACKING ====================
 
@@ -715,19 +827,29 @@ class BilliardTracker:
         # Store frame in replay buffer
         self.replay_buffer.append(frame.copy())
 
-        # Detect
+        # Detect table and find circle candidates
         table_mask = self._detect_table_mask(hsv)
         circles = self._find_circles(gray, table_mask)
 
-        # Classify
-        balls = []
-        cue_ball = None
+        # Classify with validation
+        raw_balls = []
         for (x, y, r) in circles:
+            # Check surrounding area is green felt
+            if not self._is_on_felt(hsv, x, y, r):
+                continue
             color_name, display_color = self._classify_ball(hsv, x, y, r)
-            ball = TrackedBall(x, y, r, color_name, display_color)
-            balls.append(ball)
-            if color_name == "white":
-                cue_ball = ball
+            if color_name is None:
+                continue  # failed classification threshold
+            raw_balls.append(TrackedBall(x, y, r, color_name, display_color))
+
+        # Temporal filter: require consistent detection across frames
+        balls = self._apply_temporal_filter(raw_balls)
+
+        cue_ball = None
+        for b in balls:
+            if b.color_name == "white":
+                cue_ball = b
+                break
 
         # Game type detection (first few frames)
         if self.frame_count < 30:
