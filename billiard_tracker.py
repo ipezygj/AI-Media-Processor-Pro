@@ -190,6 +190,7 @@ class BilliardTracker:
         self.potted_balls = []  # all potted ball colors
         self.stable_ball_count = 0
         self.ball_count_stable_frames = 0
+        self._missing_frames = {}  # color -> frames_missing (for pot confirmation)
 
         # Heatmap
         self.heatmap = None  # accumulated cue ball positions
@@ -410,6 +411,37 @@ class BilliardTracker:
 
         return best_match, best_display
 
+    # ==================== STABILIZATION ====================
+
+    _PERSIST_FRAMES = 8  # keep a ball visible for N frames after it disappears
+
+    def _stabilize_detections(self, detected_balls):
+        """Smooth ball detections: persist balls that briefly vanish between frames."""
+        if not hasattr(self, "_stable_balls"):
+            self._stable_balls = {}  # color -> (TrackedBall, last_seen_frame)
+
+        detected_colors = set()
+        for ball in detected_balls:
+            detected_colors.add(ball.color_name)
+            self._stable_balls[ball.color_name] = (ball, self.frame_count)
+
+        # Build output: use detected balls + recently-seen balls that aren't detected now
+        result = list(detected_balls)
+        result_colors = {b.color_name for b in result}
+
+        expired = []
+        for color, (ball, last_seen) in self._stable_balls.items():
+            age = self.frame_count - last_seen
+            if color not in result_colors and age <= self._PERSIST_FRAMES:
+                result.append(ball)  # keep showing at last known position
+            elif age > self._PERSIST_FRAMES * 3:
+                expired.append(color)
+
+        for color in expired:
+            del self._stable_balls[color]
+
+        return result
+
     # ==================== TRACKING ====================
 
     def _update_shot_tracking(self, cue_ball):
@@ -527,28 +559,55 @@ class BilliardTracker:
 
     # ==================== POCKET DETECTION ====================
 
+    _POT_CONFIRM_FRAMES = 20  # ball must be missing this many frames to count as potted
+
     def _detect_pots(self, balls):
-        """Detect when a ball disappears near a pocket."""
+        """Detect when a ball disappears for multiple frames (not just a detection flicker)."""
         if not self.enable_pockets or not self.pocket_positions:
             return
 
         current_colors = {b.color_name for b in balls}
 
+        # Track missing balls
         for color in self.prev_ball_set - current_colors:
-            if color == "white":
-                continue  # cue ball scratch handled separately
-            prev_pos = self.prev_balls.get(color)
-            if prev_pos is None:
+            if color in ("white", "unknown"):
                 continue
+            if color not in self._missing_frames:
+                self._missing_frames[color] = 0
+            self._missing_frames[color] += 1
 
-            # Check if the ball was near a pocket when it vanished
-            for idx, (px, py) in enumerate(self.pocket_positions):
-                dist = np.sqrt((prev_pos[0] - px)**2 + (prev_pos[1] - py)**2)
-                if dist < self.pocket_radius * 3:
-                    pot = PotEvent(ball_color=color, pocket_idx=idx, frame=self.frame_count)
+        # Reset counter for balls that reappeared
+        reappeared = []
+        for color in list(self._missing_frames.keys()):
+            if color in current_colors:
+                reappeared.append(color)
+        for color in reappeared:
+            del self._missing_frames[color]
+
+        # Confirm pot only after sustained absence
+        confirmed = []
+        for color, count in list(self._missing_frames.items()):
+            if count >= self._POT_CONFIRM_FRAMES:
+                # Check if last known position was near a pocket
+                prev_pos = self.prev_balls.get(color)
+                near_pocket = False
+                pocket_idx = 0
+                if prev_pos and self.pocket_positions:
+                    for idx, (px, py) in enumerate(self.pocket_positions):
+                        dist = np.sqrt((prev_pos[0] - px)**2 + (prev_pos[1] - py)**2)
+                        if dist < self.pocket_radius * 5:
+                            near_pocket = True
+                            pocket_idx = idx
+                            break
+
+                if near_pocket:
+                    pot = PotEvent(ball_color=color, pocket_idx=pocket_idx, frame=self.frame_count)
                     self.recent_pots.append(pot)
                     self.potted_balls.append(color)
-                    break
+                confirmed.append(color)
+
+        for color in confirmed:
+            del self._missing_frames[color]
 
     # ==================== HEATMAP ====================
 
@@ -829,15 +888,21 @@ class BilliardTracker:
         table_mask = self._detect_table_mask(hsv)
         circles = self._find_circles(gray, table_mask)
 
-        # Classify each circle
-        balls = []
-        cue_ball = None
+        # Classify each detected circle
+        detected_balls = []
         for (x, y, r) in circles:
             color_name, display_color = self._classify_ball(hsv, x, y, r)
             ball = TrackedBall(x, y, r, color_name, display_color)
-            balls.append(ball)
-            if color_name == "white":
-                cue_ball = ball
+            detected_balls.append(ball)
+
+        # Stabilize: keep balls from previous frames if they briefly disappear
+        balls = self._stabilize_detections(detected_balls)
+
+        cue_ball = None
+        for b in balls:
+            if b.color_name == "white":
+                cue_ball = b
+                break
 
         # Game type detection (first few frames)
         if self.frame_count < 30:
