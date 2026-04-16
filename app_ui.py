@@ -20,6 +20,7 @@ import json
 
 # Import the backend logic
 import processing_logic
+import billiard_tracker
 
 CONFIG_FILE = "settings.json"
 DEFAULT_SETTINGS = {
@@ -42,6 +43,15 @@ DEFAULT_SETTINGS = {
     "export_mode": "Video", # Video, Audio Only, Stems Only
     "export_format": "mp3",
     "stems_to_export": {"vocals": True, "drums": False, "bass": False, "other": False},
+    "billiard_mode": False,
+    "billiard_settings": {
+        "min_ball_radius": 8,
+        "max_ball_radius": 25,
+        "shot_start_speed": 8.0,
+        "shot_end_speed": 2.0,
+        "path_fade_seconds": 3.0,
+        "label_balls": True
+    },
     "appearance_mode": "Dark",
     "color_theme": "blue",
     "window_geometry": "900x950"
@@ -131,6 +141,12 @@ class App(ctk.CTk):
             self.settings["karaoke_styles"][color_key] = color_code[1]
             preview_widget.configure(fg_color=color_code[1])
 
+    def _on_billiard_toggle(self):
+        """When billiard mode is enabled, switch export to Video and disable audio-only modes."""
+        if self.billiard_mode_var.get():
+            self.export_mode_var.set("Video")
+            self._on_export_mode_change("Video")
+
     def _on_export_mode_change(self, mode):
         """Enable/disable relevant export options based on the selected mode."""
         is_audio_mode = (mode == "Audio Only")
@@ -192,6 +208,7 @@ class App(ctk.CTk):
         self.options_tab_view.add("Audio Effects")
         self.options_tab_view.add("Karaoke")
         self.options_tab_view.add("Exports")
+        self.options_tab_view.add("Billiard")
 
         # ---- Main Mixer Tab ----
         mixer_tab = self.options_tab_view.tab("Main Mixer")
@@ -287,6 +304,53 @@ class App(ctk.CTk):
             self.stem_checkboxes[stem] = cb
             self.interactive_widgets.append(cb)
 
+        # ---- Billiard Tab ----
+        billiard_tab = self.options_tab_view.tab("Billiard")
+        self.billiard_mode_var = tk.BooleanVar()
+        self.billiard_checkbox = ctk.CTkCheckBox(
+            billiard_tab, text="Enable Billiard Ball Tracking",
+            variable=self.billiard_mode_var, command=self._on_billiard_toggle
+        )
+        self.billiard_checkbox.grid(row=0, column=0, columnspan=3, padx=10, pady=(10, 5), sticky="w")
+        self.interactive_widgets.append(self.billiard_checkbox)
+
+        ctk.CTkLabel(billiard_tab, text="Min Ball Radius (px):").grid(row=1, column=0, padx=10, pady=5, sticky="w")
+        self.billiard_min_radius = ctk.CTkSlider(billiard_tab, from_=3, to=30, number_of_steps=27,
+                                                  command=lambda v: self.billiard_min_r_label.configure(text=f"{int(float(v))}"))
+        self.billiard_min_radius.grid(row=1, column=1, padx=10, pady=5, sticky="ew")
+        self.billiard_min_r_label = ctk.CTkLabel(billiard_tab, text="8", width=30)
+        self.billiard_min_r_label.grid(row=1, column=2, padx=10, pady=5)
+        self.interactive_widgets.append(self.billiard_min_radius)
+
+        ctk.CTkLabel(billiard_tab, text="Max Ball Radius (px):").grid(row=2, column=0, padx=10, pady=5, sticky="w")
+        self.billiard_max_radius = ctk.CTkSlider(billiard_tab, from_=10, to=60, number_of_steps=50,
+                                                  command=lambda v: self.billiard_max_r_label.configure(text=f"{int(float(v))}"))
+        self.billiard_max_radius.grid(row=2, column=1, padx=10, pady=5, sticky="ew")
+        self.billiard_max_r_label = ctk.CTkLabel(billiard_tab, text="25", width=30)
+        self.billiard_max_r_label.grid(row=2, column=2, padx=10, pady=5)
+        self.interactive_widgets.append(self.billiard_max_radius)
+
+        ctk.CTkLabel(billiard_tab, text="Shot Sensitivity:").grid(row=3, column=0, padx=10, pady=5, sticky="w")
+        self.billiard_sensitivity = ctk.CTkSlider(billiard_tab, from_=2, to=20, number_of_steps=18,
+                                                   command=lambda v: self.billiard_sens_label.configure(text=f"{float(v):.0f}"))
+        self.billiard_sensitivity.grid(row=3, column=1, padx=10, pady=5, sticky="ew")
+        self.billiard_sens_label = ctk.CTkLabel(billiard_tab, text="8", width=30)
+        self.billiard_sens_label.grid(row=3, column=2, padx=10, pady=5)
+        self.interactive_widgets.append(self.billiard_sensitivity)
+
+        ctk.CTkLabel(billiard_tab, text="Path Fade (sec):").grid(row=4, column=0, padx=10, pady=5, sticky="w")
+        self.billiard_fade = ctk.CTkSlider(billiard_tab, from_=1, to=10, number_of_steps=9,
+                                            command=lambda v: self.billiard_fade_label.configure(text=f"{float(v):.0f}s"))
+        self.billiard_fade.grid(row=4, column=1, padx=10, pady=5, sticky="ew")
+        self.billiard_fade_label = ctk.CTkLabel(billiard_tab, text="3s", width=30)
+        self.billiard_fade_label.grid(row=4, column=2, padx=10, pady=5)
+        self.interactive_widgets.append(self.billiard_fade)
+
+        self.billiard_labels_var = tk.BooleanVar(value=True)
+        self.billiard_labels_checkbox = ctk.CTkCheckBox(billiard_tab, text="Show Ball Labels", variable=self.billiard_labels_var)
+        self.billiard_labels_checkbox.grid(row=5, column=0, columnspan=3, padx=10, pady=5, sticky="w")
+        self.interactive_widgets.append(self.billiard_labels_checkbox)
+
         # --- Progress Bar and Log ---
         self.progress_frame = ctk.CTkFrame(self)
         self.progress_frame.grid(row=2, column=0, padx=20, pady=10, sticky="ew")
@@ -341,6 +405,12 @@ class App(ctk.CTk):
         try:
             # Use a snapshot of settings to avoid race conditions with the main thread
             s = json.loads(json.dumps(self.settings))
+
+            # Billiard-only mode: skip audio processing, just track balls
+            if s.get("billiard_mode"):
+                self._run_billiard_tracking(s)
+                return
+
             processing_logic.process_media(
                 source_path=s["source_path"],
                 output_dir_base=s["output_path"],
@@ -399,6 +469,42 @@ class App(ctk.CTk):
         self.log_textbox.insert(tk.END, message)
         self.log_textbox.see(tk.END)
 
+    def _run_billiard_tracking(self, s):
+        """Run billiard ball tracking on the source video."""
+        source = s["source_path"]
+        output_dir = s["output_path"]
+        bs = s.get("billiard_settings", {})
+
+        if not os.path.isfile(source):
+            self.update_log("Billiard tracking requires a local video file, not a URL.\n")
+            return
+
+        video_title = Path(source).stem
+        output_path = os.path.join(output_dir, f"{video_title}_billiard_tracked.mp4")
+
+        # Estimate fps for fade frame calculation
+        import cv2
+        cap = cv2.VideoCapture(source)
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        cap.release()
+        path_fade_frames = int(bs.get("path_fade_seconds", 3.0) * fps)
+
+        self.update_log(f"Starting billiard tracking on: {source}\n")
+        billiard_tracker.process_billiard_video(
+            input_path=source,
+            output_path=output_path,
+            cancel_flag=self.cancel_flag,
+            progress_callback=self.update_progress,
+            min_ball_radius=bs.get("min_ball_radius", 8),
+            max_ball_radius=bs.get("max_ball_radius", 25),
+            shot_start_speed=bs.get("shot_start_speed", 8.0),
+            shot_end_speed=bs.get("shot_end_speed", 2.0),
+            path_fade_frames=path_fade_frames,
+            path_color=(0, 255, 255),
+            path_thickness=2,
+            label_balls=bs.get("label_balls", True),
+        )
+
     def toggle_ui_state(self, is_processing):
         state = tk.DISABLED if is_processing else tk.NORMAL
         for widget in self.interactive_widgets:
@@ -427,6 +533,15 @@ class App(ctk.CTk):
         s["export_mode"] = self.export_mode_var.get()
         s["export_format"] = self.format_var.get()
         s["stems_to_export"] = {stem: var.get() for stem, var in self.stem_vars.items()}
+        s["billiard_mode"] = self.billiard_mode_var.get()
+        s["billiard_settings"] = {
+            "min_ball_radius": int(self.billiard_min_radius.get()),
+            "max_ball_radius": int(self.billiard_max_radius.get()),
+            "shot_start_speed": float(self.billiard_sensitivity.get()),
+            "shot_end_speed": 2.0,
+            "path_fade_seconds": float(self.billiard_fade.get()),
+            "label_balls": self.billiard_labels_var.get()
+        }
         s["appearance_mode"] = ctk.get_appearance_mode()
         s["window_geometry"] = self.geometry()
 
@@ -461,6 +576,19 @@ class App(ctk.CTk):
             self.stem_vars[stem].set(selected)
         
         self._on_export_mode_change(s["export_mode"])
+
+        # Billiard settings
+        bs = s.get("billiard_settings", {})
+        self.billiard_mode_var.set(s.get("billiard_mode", False))
+        self.billiard_min_radius.set(bs.get("min_ball_radius", 8))
+        self.billiard_min_r_label.configure(text=str(bs.get("min_ball_radius", 8)))
+        self.billiard_max_radius.set(bs.get("max_ball_radius", 25))
+        self.billiard_max_r_label.configure(text=str(bs.get("max_ball_radius", 25)))
+        self.billiard_sensitivity.set(bs.get("shot_start_speed", 8.0))
+        self.billiard_sens_label.configure(text=f"{bs.get('shot_start_speed', 8.0):.0f}")
+        self.billiard_fade.set(bs.get("path_fade_seconds", 3.0))
+        self.billiard_fade_label.configure(text=f"{bs.get('path_fade_seconds', 3.0):.0f}s")
+        self.billiard_labels_var.set(bs.get("label_balls", True))
 
     def on_closing(self):
         if self.processing_thread and self.processing_thread.is_alive():
