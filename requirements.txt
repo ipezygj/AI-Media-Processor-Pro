@@ -9,3 +9,5 @@ soundfile>=0.12.0
 stable-ts>=2.16.0
 opencv-python>=4.8.0
 numpy>=1.24.0
+streamlink>=6.0.0
+pyvirtualcam>=0.4.0
