@@ -82,6 +82,7 @@ class App(ctk.CTk):
         self.cancel_flag = threading.Event()
         self.processing_thread = None
         self.interactive_widgets = []
+        self._active_tracker = None  # Reference to live BilliardTracker for overlay toggles
 
         # --- Widgets ---
         self.create_widgets()
@@ -451,7 +452,36 @@ class App(ctk.CTk):
         
         self.cancel_button = ctk.CTkButton(self.button_frame, text="Cancel", command=self.cancel_processing, state=tk.DISABLED)
         self.cancel_button.grid(row=0, column=1, padx=10, pady=10, sticky="ew")
-        
+
+        # --- Live Commentator Controls (visible during billiard processing) ---
+        self.commentator_frame = ctk.CTkFrame(self)
+        self.commentator_frame.grid(row=5, column=0, padx=20, pady=(0, 10), sticky="ew")
+        ctk.CTkLabel(self.commentator_frame, text="Live Overlay Controls",
+                     font=ctk.CTkFont(weight="bold")).grid(row=0, column=0, columnspan=4, padx=10, pady=(5, 2))
+
+        self._overlay_toggles = {}
+        toggle_defs = [
+            ("heatmap", "Heatmap"),
+            ("collisions", "Collisions"),
+            ("pockets", "Pockets"),
+            ("power_meter", "Power"),
+            ("aiming_line", "Aim Line"),
+            ("scoreboard", "Scoreboard"),
+            ("labels", "Labels"),
+            ("paths", "Paths"),
+        ]
+        for i, (key, label) in enumerate(toggle_defs):
+            var = tk.BooleanVar(value=True)
+            btn = ctk.CTkSwitch(
+                self.commentator_frame, text=label, variable=var,
+                command=lambda k=key, v=var: self._toggle_live_overlay(k, v.get())
+            )
+            btn.grid(row=1 + i // 4, column=i % 4, padx=8, pady=3, sticky="w")
+            self._overlay_toggles[key] = (var, btn)
+
+        # Initially hide commentator frame
+        self.commentator_frame.grid_remove()
+
     # ----------------- PROCESSING LOGIC -----------------
     def start_processing(self):
         source_path = self.entry_source.get()
@@ -568,7 +598,7 @@ class App(ctk.CTk):
                 self.update_log(f"Recording to: {record_path}\n")
             self.update_log("Press Q in the preview window to stop.\n")
 
-            camera_processor.run_camera_processor(
+            proc = camera_processor.CameraProcessor(
                 source=cam_source,
                 record_output=record_path,
                 target_fps=30,
@@ -576,6 +606,8 @@ class App(ctk.CTk):
                 progress_callback=self.update_progress,
                 cancel_flag=self.cancel_flag,
             )
+            self._active_tracker = proc.tracker
+            proc.start()
             return
 
         elif billiard_source == "stream":
@@ -591,7 +623,7 @@ class App(ctk.CTk):
             self.update_log(f"Starting live billiard tracking: {url}\n")
             self.update_log(f"Output: Virtual Camera ({res_w}x{res_h}) -> OBS\n")
 
-            stream_processor.run_stream_processor(
+            proc = stream_processor.StreamProcessor(
                 stream_url=url,
                 quality=s.get("stream_quality", "best"),
                 target_fps=30,
@@ -601,6 +633,8 @@ class App(ctk.CTk):
                 progress_callback=self.update_progress,
                 cancel_flag=self.cancel_flag,
             )
+            self._active_tracker = proc.tracker
+            proc.start()
         else:
             # File mode — supports local files and YouTube URLs
             is_url = source.startswith("http://") or source.startswith("https://")
@@ -656,11 +690,7 @@ class App(ctk.CTk):
             path_fade_frames = int(bs.get("path_fade_seconds", 3.0) * fps)
 
             self.update_log(f"Starting billiard tracking on: {source}\n")
-            billiard_tracker.process_billiard_video(
-                input_path=source,
-                output_path=output_path,
-                cancel_flag=self.cancel_flag,
-                progress_callback=self.update_progress,
+            tracker = billiard_tracker.BilliardTracker(
                 min_ball_radius=bs.get("min_ball_radius", 8),
                 max_ball_radius=bs.get("max_ball_radius", 25),
                 shot_start_speed=bs.get("shot_start_speed", 8.0),
@@ -669,19 +699,49 @@ class App(ctk.CTk):
                 path_color=(0, 255, 255),
                 path_thickness=2,
                 label_balls=bs.get("label_balls", True),
+                fps=fps,
             )
+            self._active_tracker = tracker
+            billiard_tracker.process_billiard_video(
+                input_path=source,
+                output_path=output_path,
+                cancel_flag=self.cancel_flag,
+                progress_callback=self.update_progress,
+                tracker=tracker,
+            )
+
+    def _toggle_live_overlay(self, feature_name, enabled):
+        """Toggle an overlay feature on the active tracker during live processing."""
+        tracker = self._active_tracker
+        if tracker is None:
+            return
+        # Set the feature directly instead of toggling (switch already has the state)
+        attr = tracker.TOGGLE_MAP.get(feature_name)
+        if attr and attr != "_enable_paths":
+            setattr(tracker, attr, enabled)
+        elif attr == "_enable_paths":
+            tracker._enable_paths = enabled
+            if not enabled:
+                tracker.completed_paths.clear()
+                tracker.current_path = []
+        state_str = "ON" if enabled else "OFF"
+        self.update_log(f"[OVERLAY] {feature_name}: {state_str}\n")
 
     def toggle_ui_state(self, is_processing):
         state = tk.DISABLED if is_processing else tk.NORMAL
         for widget in self.interactive_widgets:
              widget.configure(state=state)
 
-        # THE BUGGY LOOP WAS HERE AND HAS BEEN REMOVED.
-        # The widgets inside the tabs are already in self.interactive_widgets,
-        # so they are disabled correctly by the loop above.
-
         self.start_button.configure(state=state)
         self.cancel_button.configure(state=tk.NORMAL if is_processing else tk.DISABLED, text="Cancel")
+
+        # Show/hide commentator panel during billiard processing
+        is_billiard = self.billiard_mode_var.get()
+        if is_processing and is_billiard:
+            self.commentator_frame.grid()
+        else:
+            self.commentator_frame.grid_remove()
+            self._active_tracker = None
 
     # ----------------- SETTINGS HANDLING -----------------
     def save_ui_to_settings(self):

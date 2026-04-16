@@ -155,6 +155,7 @@ class CameraProcessor:
 
                 # Draw HUD overlay
                 self._draw_hud(processed, balls, measured_fps, frame_count, writer is not None)
+                self._draw_hotkey_help(processed)
 
                 # Show preview
                 cv2.imshow(window_name, processed)
@@ -174,10 +175,15 @@ class CameraProcessor:
                         -1,
                     )
 
-                # Check for quit key (Q or Esc)
+                # Hotkeys
                 key = cv2.waitKey(1) & 0xFF
                 if key in (ord("q"), ord("Q"), 27):
                     break
+                toggled = self._handle_hotkey(key)
+                if toggled:
+                    name, state = toggled
+                    state_str = "ON" if state else "OFF"
+                    self.progress_callback(f"[HOTKEY] {name}: {state_str}", -1)
 
         finally:
             self._running = False
@@ -224,6 +230,79 @@ class CameraProcessor:
         # Shot indicator
         if self.tracker.in_shot:
             cv2.putText(frame, "SHOT!", (w // 2 - 30, 60), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 255), 2)
+
+    # Hotkey mapping: key -> feature name
+    HOTKEYS = {
+        ord("h"): "heatmap",
+        ord("c"): "collisions",
+        ord("p"): "pockets",
+        ord("m"): "power_meter",
+        ord("a"): "aiming_line",
+        ord("s"): "scoreboard",
+        ord("l"): "labels",
+        ord("t"): "paths",
+        ord("f"): "_show_help",
+    }
+
+    def _handle_hotkey(self, key):
+        """Process a hotkey press. Returns (feature_name, new_state) or None."""
+        if key == 255 or key == 0:
+            return None
+
+        feature = self.HOTKEYS.get(key)
+        if feature is None:
+            return None
+
+        if feature == "_show_help":
+            self._show_hotkey_help = not getattr(self, "_show_hotkey_help", False)
+            return ("help_overlay", self._show_hotkey_help)
+
+        return self.tracker.toggle_feature(feature)
+
+    def _draw_hotkey_help(self, frame):
+        """Draw hotkey reference overlay."""
+        if not getattr(self, "_show_hotkey_help", False):
+            return
+
+        h, w = frame.shape[:2]
+        overlay = frame.copy()
+        pad = 15
+        box_w, box_h = 280, 250
+        bx = w // 2 - box_w // 2
+        by = h // 2 - box_h // 2
+        cv2.rectangle(overlay, (bx, by), (bx + box_w, by + box_h), (20, 20, 20), -1)
+        cv2.addWeighted(overlay, 0.85, frame, 0.15, 0, frame)
+        cv2.rectangle(frame, (bx, by), (bx + box_w, by + box_h), (0, 255, 255), 1)
+
+        cv2.putText(frame, "HOTKEYS (F to close)", (bx + 10, by + 25),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 1)
+
+        states = self.tracker.get_feature_states()
+        lines = [
+            ("H", "Heatmap", states.get("heatmap", True)),
+            ("C", "Collisions", states.get("collisions", True)),
+            ("P", "Pocket detection", states.get("pockets", True)),
+            ("M", "Power meter", states.get("power_meter", True)),
+            ("A", "Aiming line", states.get("aiming_line", True)),
+            ("S", "Scoreboard", states.get("scoreboard", True)),
+            ("L", "Ball labels", states.get("labels", True)),
+            ("T", "Cue ball paths", states.get("paths", True)),
+            ("Q", "Quit", None),
+        ]
+
+        for i, (key_str, label, enabled) in enumerate(lines):
+            y = by + 50 + i * 22
+            if enabled is None:
+                color = (150, 150, 150)
+                status = ""
+            elif enabled:
+                color = (0, 255, 0)
+                status = " [ON]"
+            else:
+                color = (0, 0, 200)
+                status = " [OFF]"
+            cv2.putText(frame, f"[{key_str}] {label}{status}", (bx + 15, y),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1)
 
     def stop(self):
         """Signal the processor to stop."""

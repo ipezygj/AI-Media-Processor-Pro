@@ -200,6 +200,54 @@ class BilliardTracker:
         self._shot_start_pos = (0, 0)
         self._pre_shot_balls = set()
 
+    # ==================== HOTKEY TOGGLES ====================
+
+    # Map of feature name -> attribute name on self
+    TOGGLE_MAP = {
+        "heatmap": "enable_heatmap",
+        "collisions": "enable_collisions",
+        "pockets": "enable_pockets",
+        "power_meter": "enable_power_meter",
+        "aiming_line": "enable_aiming_line",
+        "scoreboard": "enable_scoreboard",
+        "labels": "label_balls",
+        "paths": "_enable_paths",
+    }
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+
+    def toggle_feature(self, feature_name):
+        """Toggle a feature on/off by name. Returns (feature_name, new_state)."""
+        attr = self.TOGGLE_MAP.get(feature_name)
+        if attr is None:
+            return feature_name, None
+
+        if attr == "_enable_paths":
+            # Special: paths toggle clears or enables path drawing
+            if not hasattr(self, "_enable_paths"):
+                self._enable_paths = True
+            self._enable_paths = not self._enable_paths
+            if not self._enable_paths:
+                self.completed_paths.clear()
+                self.current_path = []
+            return feature_name, self._enable_paths
+
+        current = getattr(self, attr, True)
+        new_val = not current
+        setattr(self, attr, new_val)
+        return feature_name, new_val
+
+    def get_feature_states(self):
+        """Return dict of feature_name -> enabled bool."""
+        states = {}
+        for name, attr in self.TOGGLE_MAP.items():
+            if attr == "_enable_paths":
+                states[name] = getattr(self, "_enable_paths", True)
+            else:
+                states[name] = getattr(self, attr, True)
+        return states
+
     # ==================== DETECTION ====================
 
     def _detect_table_mask(self, hsv_frame):
@@ -467,7 +515,8 @@ class BilliardTracker:
             self._draw_aiming_line(frame, cue_ball)
 
         # Active shot path
-        if self.in_shot and len(self.current_path) > 1:
+        paths_enabled = getattr(self, "_enable_paths", True)
+        if paths_enabled and self.in_shot and len(self.current_path) > 1:
             pts = np.array(self.current_path, dtype=np.int32)
             cv2.polylines(frame, [pts], False, self.path_color, self.path_thickness + 1)
 
@@ -476,11 +525,12 @@ class BilliardTracker:
         for path_points, completed_frame in self.completed_paths:
             age = self.frame_count - completed_frame
             if age < self.path_fade_frames:
-                alpha = 1.0 - (age / self.path_fade_frames)
-                color = tuple(int(c * alpha) for c in self.path_color)
-                thickness = max(1, int(self.path_thickness * alpha))
-                pts = np.array(path_points, dtype=np.int32)
-                cv2.polylines(frame, [pts], False, color, thickness)
+                if paths_enabled:
+                    alpha = 1.0 - (age / self.path_fade_frames)
+                    color = tuple(int(c * alpha) for c in self.path_color)
+                    thickness = max(1, int(self.path_thickness * alpha))
+                    pts = np.array(path_points, dtype=np.int32)
+                    cv2.polylines(frame, [pts], False, color, thickness)
                 paths_to_keep.append((path_points, completed_frame))
         self.completed_paths = paths_to_keep
 
@@ -723,6 +773,7 @@ def process_billiard_video(
     path_thickness=2,
     label_balls=True,
     stats_output_dir=None,
+    tracker=None,
 ):
     """
     Process a billiard video file with full analysis.
@@ -743,17 +794,18 @@ def process_billiard_video(
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     out = cv2.VideoWriter(str(output_path), fourcc, fps, (width, height))
 
-    tracker = BilliardTracker(
-        min_ball_radius=min_ball_radius,
-        max_ball_radius=max_ball_radius,
-        shot_start_speed=shot_start_speed,
-        shot_end_speed=shot_end_speed,
-        path_fade_frames=path_fade_frames,
-        path_color=path_color,
-        path_thickness=path_thickness,
-        label_balls=label_balls,
-        fps=fps,
-    )
+    if tracker is None:
+        tracker = BilliardTracker(
+            min_ball_radius=min_ball_radius,
+            max_ball_radius=max_ball_radius,
+            shot_start_speed=shot_start_speed,
+            shot_end_speed=shot_end_speed,
+            path_fade_frames=path_fade_frames,
+            path_color=path_color,
+            path_thickness=path_thickness,
+            label_balls=label_balls,
+            fps=fps,
+        )
 
     progress_callback("Billiard tracking started...", 0)
     frame_idx = 0

@@ -207,6 +207,14 @@ class StreamProcessor:
             ffmpeg_proc.wait()
             self.progress_callback("Stream processing stopped.", 0)
 
+    def toggle_feature(self, feature_name):
+        """Toggle a tracker feature during live processing."""
+        return self.tracker.toggle_feature(feature_name)
+
+    def get_feature_states(self):
+        """Get current state of all toggleable features."""
+        return self.tracker.get_feature_states()
+
     def stop(self):
         """Signal the processor to stop."""
         self._running = False
