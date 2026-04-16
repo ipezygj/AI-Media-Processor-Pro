@@ -67,11 +67,12 @@ BALL_COLORS = {
     },
 }
 
-# Table felt colors — covers green, blue, and teal tables
+# Table felt colors — covers green, blue, and red tables
+# Saturation minimum kept high enough to exclude skin, shirts, walls
 TABLE_FELT_RANGES = [
-    (np.array([35, 30, 30]),  np.array([90, 255, 220])),   # green felt (wide)
-    (np.array([90, 30, 30]),  np.array([130, 255, 220])),   # blue felt
-    (np.array([0, 20, 40]),   np.array([15, 200, 180])),    # red/burgundy felt
+    (np.array([35, 40, 30]),  np.array([90, 255, 230])),    # green felt
+    (np.array([85, 40, 30]),  np.array([135, 255, 255])),    # blue felt (wide)
+    (np.array([0, 50, 40]),   np.array([15, 255, 200])),     # red/burgundy felt
 ]
 
 # Pocket positions as fractions of table bounding box (x_frac, y_frac)
@@ -158,6 +159,11 @@ class BilliardTracker:
         self.enable_power_meter = enable_power_meter
         self.enable_aiming_line = enable_aiming_line
         self.enable_scoreboard = enable_scoreboard
+
+        # Table color learning
+        self._table_color_learned = False
+        self._learned_felt_lower = None
+        self._learned_felt_upper = None
 
         # Core state
         self.prev_cue_pos = None
@@ -255,28 +261,37 @@ class BilliardTracker:
     # ==================== DETECTION ====================
 
     def _detect_table_mask(self, hsv_frame):
-        """Detect table felt area. Supports green, blue, and red tables. Falls back to full frame."""
+        """Detect table felt area. Learns the dominant felt color adaptively."""
         h, w = hsv_frame.shape[:2]
 
-        # Combine all felt color ranges
-        combined_mask = np.zeros((h, w), dtype=np.uint8)
-        for lower, upper in TABLE_FELT_RANGES:
-            combined_mask = cv2.bitwise_or(combined_mask, cv2.inRange(hsv_frame, lower, upper))
+        if self._table_color_learned:
+            # Use learned color for faster, more accurate detection
+            table_mask = cv2.inRange(hsv_frame, self._learned_felt_lower, self._learned_felt_upper)
+        else:
+            # Try all known felt colors
+            table_mask = np.zeros((h, w), dtype=np.uint8)
+            for lower, upper in TABLE_FELT_RANGES:
+                table_mask = cv2.bitwise_or(table_mask, cv2.inRange(hsv_frame, lower, upper))
 
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
-        combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_CLOSE, kernel)
+        table_mask = cv2.morphologyEx(table_mask, cv2.MORPH_CLOSE, kernel)
 
-        contours, _ = cv2.findContours(combined_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours, _ = cv2.findContours(table_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
         if contours:
             largest = max(contours, key=cv2.contourArea)
             frame_area = h * w
 
-            if cv2.contourArea(largest) > frame_area * 0.05:
-                # Found a table — use contour + dilate for edge balls
+            # Table must be at least 3% of frame (low angle = smaller visible area)
+            if cv2.contourArea(largest) > frame_area * 0.03:
+                # Learn the actual felt color from the detected region
+                if not self._table_color_learned and self.frame_count > 5:
+                    self._learn_table_color(hsv_frame, largest)
+
+                # Create mask from contour + generous dilation for balls at edges
                 contour_mask = np.zeros((h, w), dtype=np.uint8)
                 cv2.drawContours(contour_mask, [largest], -1, 255, -1)
-                dilate_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
+                dilate_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (20, 20))
                 contour_mask = cv2.dilate(contour_mask, dilate_kernel, iterations=2)
 
                 self.table_bbox = cv2.boundingRect(largest)
@@ -284,11 +299,46 @@ class BilliardTracker:
                 self._update_pocket_positions()
                 return contour_mask
 
-        # Fallback: no table detected — use entire frame
-        full_mask = np.full((h, w), 255, dtype=np.uint8)
-        self.table_bbox = (0, 0, w, h)
-        self._update_pocket_positions()
-        return full_mask
+        # No table detected — return empty mask
+        return np.zeros((h, w), dtype=np.uint8)
+
+    def _learn_table_color(self, hsv_frame, contour):
+        """Sample the felt color from detected table region and create a tight HSV range."""
+        mask = np.zeros(hsv_frame.shape[:2], dtype=np.uint8)
+        cv2.drawContours(mask, [contour], -1, 255, -1)
+        # Erode to sample only the inner area (avoid edges)
+        erode_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (20, 20))
+        mask = cv2.erode(mask, erode_k, iterations=2)
+
+        pixels = hsv_frame[mask > 0]
+        if len(pixels) < 100:
+            return
+
+        # Calculate mean and std of the felt color
+        mean_h = np.mean(pixels[:, 0])
+        mean_s = np.mean(pixels[:, 1])
+        mean_v = np.mean(pixels[:, 2])
+        std_h = np.std(pixels[:, 0])
+        std_s = np.std(pixels[:, 1])
+        std_v = np.std(pixels[:, 2])
+
+        # Create a range: mean +/- 2*std, clamped to valid HSV
+        margin_h = max(std_h * 2.5, 10)
+        margin_s = max(std_s * 2.5, 30)
+        margin_v = max(std_v * 2.5, 40)
+
+        self._learned_felt_lower = np.array([
+            max(0, mean_h - margin_h),
+            max(0, mean_s - margin_s),
+            max(0, mean_v - margin_v),
+        ], dtype=np.uint8)
+        self._learned_felt_upper = np.array([
+            min(180, mean_h + margin_h),
+            min(255, mean_s + margin_s),
+            min(255, mean_v + margin_v),
+        ], dtype=np.uint8)
+
+        self._table_color_learned = True
 
     def _update_pocket_positions(self):
         """Calculate pocket positions from table bounding box."""
@@ -302,18 +352,23 @@ class BilliardTracker:
         self.pocket_radius = max(20, int(min(tw, th) * 0.06))
 
     def _find_circles(self, gray_frame, mask):
-        """Detect circular shapes using HoughCircles."""
+        """Detect circular shapes using HoughCircles. Tries multiple sensitivity levels."""
         masked_gray = cv2.bitwise_and(gray_frame, gray_frame, mask=mask)
         blurred = cv2.GaussianBlur(masked_gray, (9, 9), 2)
 
-        circles = cv2.HoughCircles(
-            blurred, cv2.HOUGH_GRADIENT, dp=1.2,
-            minDist=self.min_ball_radius * 2,
-            param1=50,
-            param2=30,
-            minRadius=self.min_ball_radius,
-            maxRadius=self.max_ball_radius,
-        )
+        # Try with standard sensitivity first, then loosen if nothing found
+        for param2_val in [28, 22, 16]:
+            circles = cv2.HoughCircles(
+                blurred, cv2.HOUGH_GRADIENT, dp=1.2,
+                minDist=self.min_ball_radius * 2,
+                param1=50,
+                param2=param2_val,
+                minRadius=self.min_ball_radius,
+                maxRadius=self.max_ball_radius,
+            )
+            if circles is not None:
+                break
+
         if circles is None:
             return []
 
@@ -326,8 +381,8 @@ class BilliardTracker:
                 if mask[y, x] > 0:
                     valid.append((x, y, r))
 
-        # Size consistency: reject extreme outliers only (>80% off median)
-        if len(valid) >= 3:
+        # Size consistency: reject extreme outliers only
+        if len(valid) >= 4:
             radii = [r for (_, _, r) in valid]
             median_r = np.median(radii)
             valid = [(x, y, r) for (x, y, r) in valid
@@ -526,6 +581,17 @@ class BilliardTracker:
     def _draw_overlays(self, frame, balls, cue_ball):
         """Draw all visual overlays on the frame."""
         h, w = frame.shape[:2]
+
+        # Table detection indicator
+        if self.table_bbox:
+            tx, ty, tw, th = self.table_bbox
+            cv2.rectangle(frame, (tx, ty), (tx + tw, ty + th), (50, 50, 50), 1)
+            status = "TABLE LOCKED" if self._table_color_learned else "TABLE DETECTED"
+            cv2.putText(frame, status, (tx + 5, ty - 5),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 200, 0), 1)
+        else:
+            cv2.putText(frame, "NO TABLE FOUND", (10, h - 40),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
         # Heatmap (drawn first, semi-transparent under everything)
         if self.enable_heatmap and self.heatmap is not None:
