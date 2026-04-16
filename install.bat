@@ -37,16 +37,16 @@ echo Tarkistetaan GPU-tuki...
 nvidia-smi >nul 2>&1
 if %errorlevel% equ 0 (
     echo [OK] NVIDIA GPU havaittu - asennetaan CUDA-tuella.
-    pip install torch torchaudio torchvision --index-url https://download.pytorch.org/whl/cu121
+    pip install --no-cache-dir torch torchaudio torchvision --index-url https://download.pytorch.org/whl/cu121
 ) else (
     echo [INFO] NVIDIA GPU:ta ei havaittu - asennetaan CPU-versio.
-    pip install torch torchaudio torchvision
+    pip install --no-cache-dir torch torchaudio torchvision
 )
 
 :: Install remaining dependencies
 echo.
 echo Asennetaan muut riippuvuudet...
-pip install -r "%~dp0requirements.txt"
+pip install --no-cache-dir -r "%~dp0requirements.txt"
 
 echo.
 echo ============================================
