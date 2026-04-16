@@ -67,8 +67,12 @@ BALL_COLORS = {
     },
 }
 
-TABLE_GREEN_LOWER = np.array([35, 40, 40])
-TABLE_GREEN_UPPER = np.array([85, 255, 200])
+# Table felt colors — covers green, blue, and teal tables
+TABLE_FELT_RANGES = [
+    (np.array([35, 30, 30]),  np.array([90, 255, 220])),   # green felt (wide)
+    (np.array([90, 30, 30]),  np.array([130, 255, 220])),   # blue felt
+    (np.array([0, 20, 40]),   np.array([15, 200, 180])),    # red/burgundy felt
+]
 
 # Pocket positions as fractions of table bounding box (x_frac, y_frac)
 POCKET_POSITIONS_FRAC = [
@@ -251,33 +255,40 @@ class BilliardTracker:
     # ==================== DETECTION ====================
 
     def _detect_table_mask(self, hsv_frame):
-        """Create table mask using largest green contour with gentle padding."""
-        table_mask = cv2.inRange(hsv_frame, TABLE_GREEN_LOWER, TABLE_GREEN_UPPER)
+        """Detect table felt area. Supports green, blue, and red tables. Falls back to full frame."""
+        h, w = hsv_frame.shape[:2]
+
+        # Combine all felt color ranges
+        combined_mask = np.zeros((h, w), dtype=np.uint8)
+        for lower, upper in TABLE_FELT_RANGES:
+            combined_mask = cv2.bitwise_or(combined_mask, cv2.inRange(hsv_frame, lower, upper))
+
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
-        table_mask = cv2.morphologyEx(table_mask, cv2.MORPH_CLOSE, kernel)
+        combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_CLOSE, kernel)
 
-        contours, _ = cv2.findContours(table_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if not contours:
-            return table_mask
+        contours, _ = cv2.findContours(combined_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-        largest = max(contours, key=cv2.contourArea)
-        frame_area = hsv_frame.shape[0] * hsv_frame.shape[1]
+        if contours:
+            largest = max(contours, key=cv2.contourArea)
+            frame_area = h * w
 
-        # Table should be at least 5% of the frame
-        if cv2.contourArea(largest) < frame_area * 0.05:
-            return table_mask
+            if cv2.contourArea(largest) > frame_area * 0.05:
+                # Found a table — use contour + dilate for edge balls
+                contour_mask = np.zeros((h, w), dtype=np.uint8)
+                cv2.drawContours(contour_mask, [largest], -1, 255, -1)
+                dilate_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
+                contour_mask = cv2.dilate(contour_mask, dilate_kernel, iterations=2)
 
-        # Use contour mask but DILATE slightly so balls at edges aren't clipped
-        contour_mask = np.zeros(table_mask.shape, dtype=np.uint8)
-        cv2.drawContours(contour_mask, [largest], -1, 255, -1)
-        dilate_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11))
-        contour_mask = cv2.dilate(contour_mask, dilate_kernel, iterations=1)
+                self.table_bbox = cv2.boundingRect(largest)
+                self._table_contour = largest
+                self._update_pocket_positions()
+                return contour_mask
 
-        self.table_bbox = cv2.boundingRect(largest)
-        self._table_contour = largest
+        # Fallback: no table detected — use entire frame
+        full_mask = np.full((h, w), 255, dtype=np.uint8)
+        self.table_bbox = (0, 0, w, h)
         self._update_pocket_positions()
-
-        return contour_mask
+        return full_mask
 
     def _update_pocket_positions(self):
         """Calculate pocket positions from table bounding box."""
