@@ -185,6 +185,15 @@ class CameraProcessor:
             if writer:
                 writer.release()
             cv2.destroyAllWindows()
+
+            # Export stats if recording
+            if self.record_output and self.tracker.stats.total_shots > 0:
+                base = Path(self.record_output).stem
+                out_dir = Path(self.record_output).parent
+                self.tracker.stats.export_json(str(out_dir / f"{base}_stats.json"))
+                self.tracker.stats.export_csv(str(out_dir / f"{base}_stats.csv"))
+                self.progress_callback(f"Stats exported to {out_dir}", 0)
+
             self.progress_callback(
                 f"Camera processing stopped. {frame_count} frames processed.", 0
             )
@@ -199,10 +208,13 @@ class CameraProcessor:
         # Stats text
         ball_count = len(balls)
         cue_found = any(b.color_name == "white" for b in balls)
-        cue_status = "CUE: TRACKING" if cue_found else "CUE: SEARCHING"
+        cue_status = "CUE" if cue_found else "NO CUE"
+        stats = self.tracker.stats
 
-        info = f"FPS: {fps:.1f} | Balls: {ball_count} | {cue_status} | Frame: {frame_count}"
-        cv2.putText(frame, info, (10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 1)
+        info = (f"FPS: {fps:.1f} | {ball_count} balls | {cue_status} | "
+                f"Shots: {stats.total_shots} | Pots: {stats.total_pots} | "
+                f"{stats.game_type}")
+        cv2.putText(frame, info, (10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1)
 
         # Recording indicator
         if recording:
