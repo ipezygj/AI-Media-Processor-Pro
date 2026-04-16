@@ -602,12 +602,51 @@ class App(ctk.CTk):
                 cancel_flag=self.cancel_flag,
             )
         else:
-            # Local file mode
-            if not os.path.isfile(source):
-                self.update_log("Billiard tracking requires a local video file.\n")
-                return
+            # File mode — supports local files and YouTube URLs
+            is_url = source.startswith("http://") or source.startswith("https://")
 
-            video_title = Path(source).stem
+            if is_url:
+                # Download video from YouTube/URL first
+                import yt_dlp
+                self.update_progress("Downloading video...", -1)
+                self.update_log(f"Downloading: {source}\n")
+
+                video_file = os.path.join(output_dir, "billiard_download.mp4")
+                ydl_opts = {
+                    "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+                    "outtmpl": video_file,
+                    "noplaylist": True,
+                    "quiet": True,
+                    "progress_hooks": [
+                        lambda d: self.update_progress(
+                            f"Downloading: {d.get('_percent_str', '?')}",
+                            -1,
+                        )
+                    ],
+                }
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(source, download=True)
+                    video_title = processing_logic.sanitize_filename(
+                        info.get("title", "video")
+                    )
+                # yt-dlp may add extension, find the actual file
+                downloaded = video_file
+                if not os.path.isfile(downloaded):
+                    from pathlib import Path as P
+                    candidates = list(P(output_dir).glob("billiard_download.*"))
+                    if candidates:
+                        downloaded = str(candidates[0])
+                    else:
+                        self.update_log("Download failed.\n")
+                        return
+                source = downloaded
+                self.update_log(f"Download complete: {source}\n")
+            elif not os.path.isfile(source):
+                self.update_log("Source file not found. Provide a local file or YouTube URL.\n")
+                return
+            else:
+                video_title = Path(source).stem
+
             output_path = os.path.join(output_dir, f"{video_title}_billiard_tracked.mp4")
 
             import cv2
