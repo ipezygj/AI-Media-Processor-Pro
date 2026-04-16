@@ -22,6 +22,7 @@ import json
 import processing_logic
 import billiard_tracker
 import stream_processor
+import camera_processor
 
 CONFIG_FILE = "settings.json"
 DEFAULT_SETTINGS = {
@@ -49,6 +50,8 @@ DEFAULT_SETTINGS = {
     "stream_url": "",
     "stream_quality": "best",
     "stream_resolution": "1280x720",
+    "camera_source": "0",
+    "camera_record": False,
     "billiard_settings": {
         "min_ball_radius": 8,
         "max_ball_radius": 25,
@@ -154,8 +157,14 @@ class App(ctk.CTk):
         self._on_billiard_source_change(self.billiard_source_var.get())
 
     def _on_billiard_source_change(self, source):
-        """Toggle stream-specific controls based on source selection."""
+        """Toggle source-specific controls based on selection."""
+        is_camera = (source == "camera")
         is_stream = (source == "stream")
+
+        camera_state = tk.NORMAL if is_camera else tk.DISABLED
+        self.camera_source_entry.configure(state=camera_state)
+        self.camera_record_checkbox.configure(state=camera_state)
+
         stream_state = tk.NORMAL if is_stream else tk.DISABLED
         self.stream_url_entry.configure(state=stream_state)
         self.stream_quality_menu.configure(state=stream_state)
@@ -333,78 +342,90 @@ class App(ctk.CTk):
         self.billiard_source_var = tk.StringVar(value="file")
         self.billiard_source_chooser = ctk.CTkSegmentedButton(
             billiard_tab, variable=self.billiard_source_var,
-            values=["file", "stream"],
+            values=["file", "camera", "stream"],
             command=self._on_billiard_source_change
         )
         self.billiard_source_chooser.grid(row=1, column=1, columnspan=2, padx=10, pady=5, sticky="ew")
         self.interactive_widgets.append(self.billiard_source_chooser)
 
-        # Stream URL
-        ctk.CTkLabel(billiard_tab, text="Stream URL:").grid(row=2, column=0, padx=10, pady=5, sticky="w")
+        # Camera source (device index or IP cam URL)
+        ctk.CTkLabel(billiard_tab, text="Camera:").grid(row=2, column=0, padx=10, pady=5, sticky="w")
+        self.camera_source_entry = ctk.CTkEntry(billiard_tab, placeholder_text="0  or  http://192.168.1.5:8080/video")
+        self.camera_source_entry.grid(row=2, column=1, columnspan=2, padx=10, pady=5, sticky="ew")
+        self.camera_source_entry.bind("<Button-3>", self._show_context_menu)
+        self.interactive_widgets.append(self.camera_source_entry)
+
+        self.camera_record_var = tk.BooleanVar()
+        self.camera_record_checkbox = ctk.CTkCheckBox(billiard_tab, text="Record to file", variable=self.camera_record_var)
+        self.camera_record_checkbox.grid(row=3, column=1, columnspan=2, padx=10, pady=2, sticky="w")
+        self.interactive_widgets.append(self.camera_record_checkbox)
+
+        # Stream URL (Twitch/YouTube)
+        ctk.CTkLabel(billiard_tab, text="Stream URL:").grid(row=4, column=0, padx=10, pady=5, sticky="w")
         self.stream_url_entry = ctk.CTkEntry(billiard_tab, placeholder_text="https://twitch.tv/channel_name")
-        self.stream_url_entry.grid(row=2, column=1, columnspan=2, padx=10, pady=5, sticky="ew")
+        self.stream_url_entry.grid(row=4, column=1, columnspan=2, padx=10, pady=5, sticky="ew")
         self.stream_url_entry.bind("<Button-3>", self._show_context_menu)
         self.interactive_widgets.append(self.stream_url_entry)
 
         # Stream quality
-        ctk.CTkLabel(billiard_tab, text="Stream Quality:").grid(row=3, column=0, padx=10, pady=5, sticky="w")
+        ctk.CTkLabel(billiard_tab, text="Stream Quality:").grid(row=5, column=0, padx=10, pady=5, sticky="w")
         self.stream_quality_var = tk.StringVar(value="best")
         self.stream_quality_menu = ctk.CTkOptionMenu(
             billiard_tab, variable=self.stream_quality_var,
             values=["best", "1080p", "720p", "480p", "360p", "worst"]
         )
-        self.stream_quality_menu.grid(row=3, column=1, columnspan=2, padx=10, pady=5, sticky="ew")
+        self.stream_quality_menu.grid(row=5, column=1, columnspan=2, padx=10, pady=5, sticky="ew")
         self.interactive_widgets.append(self.stream_quality_menu)
 
         # Stream resolution for virtual camera
-        ctk.CTkLabel(billiard_tab, text="Output Resolution:").grid(row=4, column=0, padx=10, pady=5, sticky="w")
+        ctk.CTkLabel(billiard_tab, text="Output Resolution:").grid(row=6, column=0, padx=10, pady=5, sticky="w")
         self.stream_resolution_var = tk.StringVar(value="1280x720")
         self.stream_resolution_menu = ctk.CTkOptionMenu(
             billiard_tab, variable=self.stream_resolution_var,
             values=["1920x1080", "1280x720", "854x480"]
         )
-        self.stream_resolution_menu.grid(row=4, column=1, columnspan=2, padx=10, pady=5, sticky="ew")
+        self.stream_resolution_menu.grid(row=6, column=1, columnspan=2, padx=10, pady=5, sticky="ew")
         self.interactive_widgets.append(self.stream_resolution_menu)
 
         # Separator
         separator = ctk.CTkLabel(billiard_tab, text="--- Tracking Settings ---", text_color="gray")
-        separator.grid(row=5, column=0, columnspan=3, padx=10, pady=(10, 2))
+        separator.grid(row=7, column=0, columnspan=3, padx=10, pady=(10, 2))
 
-        ctk.CTkLabel(billiard_tab, text="Min Ball Radius (px):").grid(row=6, column=0, padx=10, pady=5, sticky="w")
+        ctk.CTkLabel(billiard_tab, text="Min Ball Radius (px):").grid(row=8, column=0, padx=10, pady=5, sticky="w")
         self.billiard_min_radius = ctk.CTkSlider(billiard_tab, from_=3, to=30, number_of_steps=27,
                                                   command=lambda v: self.billiard_min_r_label.configure(text=f"{int(float(v))}"))
-        self.billiard_min_radius.grid(row=6, column=1, padx=10, pady=5, sticky="ew")
+        self.billiard_min_radius.grid(row=8, column=1, padx=10, pady=5, sticky="ew")
         self.billiard_min_r_label = ctk.CTkLabel(billiard_tab, text="8", width=30)
-        self.billiard_min_r_label.grid(row=6, column=2, padx=10, pady=5)
+        self.billiard_min_r_label.grid(row=8, column=2, padx=10, pady=5)
         self.interactive_widgets.append(self.billiard_min_radius)
 
-        ctk.CTkLabel(billiard_tab, text="Max Ball Radius (px):").grid(row=7, column=0, padx=10, pady=5, sticky="w")
+        ctk.CTkLabel(billiard_tab, text="Max Ball Radius (px):").grid(row=9, column=0, padx=10, pady=5, sticky="w")
         self.billiard_max_radius = ctk.CTkSlider(billiard_tab, from_=10, to=60, number_of_steps=50,
                                                   command=lambda v: self.billiard_max_r_label.configure(text=f"{int(float(v))}"))
-        self.billiard_max_radius.grid(row=7, column=1, padx=10, pady=5, sticky="ew")
+        self.billiard_max_radius.grid(row=9, column=1, padx=10, pady=5, sticky="ew")
         self.billiard_max_r_label = ctk.CTkLabel(billiard_tab, text="25", width=30)
-        self.billiard_max_r_label.grid(row=7, column=2, padx=10, pady=5)
+        self.billiard_max_r_label.grid(row=9, column=2, padx=10, pady=5)
         self.interactive_widgets.append(self.billiard_max_radius)
 
-        ctk.CTkLabel(billiard_tab, text="Shot Sensitivity:").grid(row=8, column=0, padx=10, pady=5, sticky="w")
+        ctk.CTkLabel(billiard_tab, text="Shot Sensitivity:").grid(row=10, column=0, padx=10, pady=5, sticky="w")
         self.billiard_sensitivity = ctk.CTkSlider(billiard_tab, from_=2, to=20, number_of_steps=18,
                                                    command=lambda v: self.billiard_sens_label.configure(text=f"{float(v):.0f}"))
-        self.billiard_sensitivity.grid(row=8, column=1, padx=10, pady=5, sticky="ew")
+        self.billiard_sensitivity.grid(row=10, column=1, padx=10, pady=5, sticky="ew")
         self.billiard_sens_label = ctk.CTkLabel(billiard_tab, text="8", width=30)
-        self.billiard_sens_label.grid(row=8, column=2, padx=10, pady=5)
+        self.billiard_sens_label.grid(row=10, column=2, padx=10, pady=5)
         self.interactive_widgets.append(self.billiard_sensitivity)
 
-        ctk.CTkLabel(billiard_tab, text="Path Fade (sec):").grid(row=9, column=0, padx=10, pady=5, sticky="w")
+        ctk.CTkLabel(billiard_tab, text="Path Fade (sec):").grid(row=11, column=0, padx=10, pady=5, sticky="w")
         self.billiard_fade = ctk.CTkSlider(billiard_tab, from_=1, to=10, number_of_steps=9,
                                             command=lambda v: self.billiard_fade_label.configure(text=f"{float(v):.0f}s"))
-        self.billiard_fade.grid(row=9, column=1, padx=10, pady=5, sticky="ew")
+        self.billiard_fade.grid(row=11, column=1, padx=10, pady=5, sticky="ew")
         self.billiard_fade_label = ctk.CTkLabel(billiard_tab, text="3s", width=30)
-        self.billiard_fade_label.grid(row=9, column=2, padx=10, pady=5)
+        self.billiard_fade_label.grid(row=11, column=2, padx=10, pady=5)
         self.interactive_widgets.append(self.billiard_fade)
 
         self.billiard_labels_var = tk.BooleanVar(value=True)
         self.billiard_labels_checkbox = ctk.CTkCheckBox(billiard_tab, text="Show Ball Labels", variable=self.billiard_labels_var)
-        self.billiard_labels_checkbox.grid(row=10, column=0, columnspan=3, padx=10, pady=5, sticky="w")
+        self.billiard_labels_checkbox.grid(row=12, column=0, columnspan=3, padx=10, pady=5, sticky="w")
         self.interactive_widgets.append(self.billiard_labels_checkbox)
 
         # --- Progress Bar and Log ---
@@ -532,7 +553,32 @@ class App(ctk.CTk):
         bs = s.get("billiard_settings", {})
         billiard_source = s.get("billiard_source", "file")
 
-        if billiard_source == "stream":
+        if billiard_source == "camera":
+            # Direct camera mode (phone IP cam, USB webcam, DroidCam)
+            cam_source = s.get("camera_source", "0").strip()
+            if not cam_source:
+                cam_source = "0"
+
+            record_path = None
+            if s.get("camera_record"):
+                record_path = os.path.join(output_dir, "billiard_live_recording.mp4")
+
+            self.update_log(f"Starting camera billiard tracking: {cam_source}\n")
+            if record_path:
+                self.update_log(f"Recording to: {record_path}\n")
+            self.update_log("Press Q in the preview window to stop.\n")
+
+            camera_processor.run_camera_processor(
+                source=cam_source,
+                record_output=record_path,
+                target_fps=30,
+                tracker_settings=bs,
+                progress_callback=self.update_progress,
+                cancel_flag=self.cancel_flag,
+            )
+            return
+
+        elif billiard_source == "stream":
             # Live stream mode -> virtual camera for OBS
             url = s.get("stream_url", "")
             if not url:
@@ -616,6 +662,8 @@ class App(ctk.CTk):
         s["stems_to_export"] = {stem: var.get() for stem, var in self.stem_vars.items()}
         s["billiard_mode"] = self.billiard_mode_var.get()
         s["billiard_source"] = self.billiard_source_var.get()
+        s["camera_source"] = self.camera_source_entry.get()
+        s["camera_record"] = self.camera_record_var.get()
         s["stream_url"] = self.stream_url_entry.get()
         s["stream_quality"] = self.stream_quality_var.get()
         s["stream_resolution"] = self.stream_resolution_var.get()
@@ -664,6 +712,8 @@ class App(ctk.CTk):
 
         # Billiard settings
         self.billiard_source_var.set(s.get("billiard_source", "file"))
+        self.camera_source_entry.insert(0, s.get("camera_source", "0"))
+        self.camera_record_var.set(s.get("camera_record", False))
         self.stream_url_entry.insert(0, s.get("stream_url", ""))
         self.stream_quality_var.set(s.get("stream_quality", "best"))
         self.stream_resolution_var.set(s.get("stream_resolution", "1280x720"))
