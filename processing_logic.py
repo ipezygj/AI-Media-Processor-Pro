@@ -144,7 +144,9 @@ def process_media(
             ydl_opts['outtmpl'] = os.path.join(temp_processing_dir, 'full_audio.%(ext)s')
             ydl_opts['format'] = 'bestaudio/best'
             with yt_dlp.YoutubeDL(ydl_opts) as ydl: ydl.download([source_path])
-            downloaded_audio_file = next(Path(temp_processing_dir).glob('full_audio.*'))
+            downloaded_audio_file = next(Path(temp_processing_dir).glob('full_audio.*'), None)
+            if not downloaded_audio_file:
+                raise ProcessingError("Failed to download audio stream.")
             full_audio_file = os.path.join(temp_processing_dir, 'full_audio.wav')
             if str(downloaded_audio_file) != full_audio_file:
                 progress_callback("Converting downloaded audio to WAV...", 13)
@@ -188,7 +190,9 @@ def process_media(
         process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, universal_newlines=True, encoding='utf-8', errors='ignore')
         progress_regex = re.compile(r'(\d+)%\|')
         chunks_processed, last_percentage = 0, 0
+        stderr_lines = []
         for line in iter(process.stderr.readline, ''):
+            stderr_lines.append(line)
             if match := progress_regex.search(line):
                 percentage = int(match.group(1))
                 if percentage < last_percentage and last_percentage > 95: chunks_processed = min(chunks_processed + 1, num_chunks)
@@ -196,7 +200,7 @@ def process_media(
                 overall_progress = 30 + ((chunks_processed + (percentage / 100)) / num_chunks) * 40
                 progress_callback(f"AI Separation (Chunk {chunks_processed + 1}/{num_chunks}) - {percentage}%", overall_progress)
         process.wait()
-        if process.returncode != 0: raise ProcessingError("Demucs failed.", process.stderr.read())
+        if process.returncode != 0: raise ProcessingError("Demucs failed.", "".join(stderr_lines))
         progress_callback("AI separation complete.", 70)
 
         # ... (Step 6: Mix and Merge Stems is unchanged, it is robust) ...
@@ -294,14 +298,18 @@ def process_media(
         
         progress_callback(f"✅ Success! Final video saved to {final_video_path}", 100)
 
-    except (ProcessingError, ffmpeg.Error, Exception) as e:
-        error_message = f"❌ An error occurred: {e}"
-        if isinstance(e, ProcessingError):
-            error_message = f"❌ Processing Error: {e}\nDetails:\n{e.details}"
-        elif isinstance(e, ffmpeg.Error):
-             error_message = f"❌ FFmpeg Error:\n{e.stderr.decode('utf-8', errors='ignore')}"
+    except CancelledError:
+        raise  # Let the UI handle cancellation cleanly
+    except ProcessingError:
+        raise  # Let the UI handle with its own formatting
+    except ffmpeg.Error as e:
+        error_message = f"❌ FFmpeg Error:\n{e.stderr.decode('utf-8', errors='ignore')}"
         progress_callback(error_message, 100)
-        raise e # Re-raise for the UI to catch
+        raise ProcessingError("FFmpeg failed.", e.stderr.decode('utf-8', errors='ignore'))
+    except Exception as e:
+        error_message = f"❌ An error occurred: {e}"
+        progress_callback(error_message, 100)
+        raise
     finally:
         if temp_processing_dir and os.path.exists(temp_processing_dir):
             try:

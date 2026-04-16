@@ -71,16 +71,24 @@ class App(ctk.CTk):
         self.load_ui_from_settings()
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
 
+    @staticmethod
+    def _deep_merge(defaults, overrides):
+        """Recursively merge overrides into defaults, preserving new default keys."""
+        merged = defaults.copy()
+        for key, value in overrides.items():
+            if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
+                merged[key] = App._deep_merge(merged[key], value)
+            else:
+                merged[key] = value
+        return merged
+
     def _load_settings(self):
         """Loads settings from config file, filling gaps with defaults."""
         if os.path.exists(CONFIG_FILE):
             try:
                 with open(CONFIG_FILE, 'r') as f:
                     loaded_settings = json.load(f)
-                # Merge loaded settings with defaults to ensure all keys exist
-                settings = DEFAULT_SETTINGS.copy()
-                settings.update(loaded_settings)
-                return settings
+                return self._deep_merge(DEFAULT_SETTINGS, loaded_settings)
             except (IOError, json.JSONDecodeError):
                 return DEFAULT_SETTINGS.copy()
         return DEFAULT_SETTINGS.copy()
@@ -88,9 +96,14 @@ class App(ctk.CTk):
     # ----------------- CONTEXT MENU -----------------
     def _create_context_menu(self):
         self.context_menu = tk.Menu(self, tearoff=0)
-        self.context_menu.add_command(label="Cut", command=lambda: self.focus_get().event_generate('<<Cut>>'))
-        self.context_menu.add_command(label="Copy", command=lambda: self.focus_get().event_generate('<<Copy>>'))
-        self.context_menu.add_command(label="Paste", command=lambda: self.focus_get().event_generate('<<Paste>>'))
+        self.context_menu.add_command(label="Cut", command=lambda: self._safe_event('<<Cut>>'))
+        self.context_menu.add_command(label="Copy", command=lambda: self._safe_event('<<Copy>>'))
+        self.context_menu.add_command(label="Paste", command=lambda: self._safe_event('<<Paste>>'))
+
+    def _safe_event(self, event):
+        widget = self.focus_get()
+        if widget:
+            widget.event_generate(event)
 
     def _show_context_menu(self, event):
         event.widget.focus()
@@ -179,7 +192,6 @@ class App(ctk.CTk):
         self.options_tab_view.add("Audio Effects")
         self.options_tab_view.add("Karaoke")
         self.options_tab_view.add("Exports")
-        self.interactive_widgets.append(self.options_tab_view)
 
         # ---- Main Mixer Tab ----
         mixer_tab = self.options_tab_view.tab("Main Mixer")
@@ -327,8 +339,8 @@ class App(ctk.CTk):
 
     def _processing_thread(self):
         try:
-            # All settings are now read from the self.settings dict
-            s = self.settings
+            # Use a snapshot of settings to avoid race conditions with the main thread
+            s = json.loads(json.dumps(self.settings))
             processing_logic.process_media(
                 source_path=s["source_path"],
                 output_dir_base=s["output_path"],
@@ -381,6 +393,9 @@ class App(ctk.CTk):
             self.progress_bar.set(percentage / 100.0)
 
     def update_log(self, message):
+        self.after(0, self._update_log_ui, message)
+
+    def _update_log_ui(self, message):
         self.log_textbox.insert(tk.END, message)
         self.log_textbox.see(tk.END)
 
