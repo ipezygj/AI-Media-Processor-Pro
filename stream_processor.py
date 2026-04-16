@@ -49,6 +49,7 @@ class StreamProcessor:
         tracker_settings=None,
         progress_callback=None,
         cancel_flag=None,
+        show_preview=True,
     ):
         self.stream_url = stream_url
         self.quality = quality
@@ -57,6 +58,7 @@ class StreamProcessor:
         self.output_height = output_height
         self.progress_callback = progress_callback or (lambda msg, pct: None)
         self.cancel_flag = cancel_flag
+        self.show_preview = show_preview
 
         # Tracker setup
         ts = tracker_settings or {}
@@ -185,6 +187,13 @@ class StreamProcessor:
                     # Send to virtual camera
                     cam.send(processed)
 
+                    # Show local preview
+                    if getattr(self, "show_preview", True):
+                        cv2.imshow("Stream Preview (Q to quit)", processed)
+                        key = cv2.waitKey(1) & 0xFF
+                        if key in (ord("q"), ord("Q"), 27):
+                            break
+
                     # FPS calculation
                     fps_frame_count += 1
                     elapsed = time.time() - fps_timer
@@ -205,6 +214,8 @@ class StreamProcessor:
             self._running = False
             ffmpeg_proc.terminate()
             ffmpeg_proc.wait()
+            if self.show_preview:
+                cv2.destroyAllWindows()
             self.progress_callback("Stream processing stopped.", 0)
 
     def toggle_feature(self, feature_name):

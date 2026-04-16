@@ -774,6 +774,7 @@ def process_billiard_video(
     label_balls=True,
     stats_output_dir=None,
     tracker=None,
+    show_preview=True,
 ):
     """
     Process a billiard video file with full analysis.
@@ -810,26 +811,44 @@ def process_billiard_video(
     progress_callback("Billiard tracking started...", 0)
     frame_idx = 0
 
-    while True:
-        if cancel_flag and cancel_flag.is_set():
-            break
+    window_name = "Billiard Tracker - Preview (Q to quit)"
+    if show_preview:
+        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+        # Scale preview to reasonable size
+        preview_w = min(width, 960)
+        preview_h = int(height * (preview_w / width))
+        cv2.resizeWindow(window_name, preview_w, preview_h)
 
-        ret, frame = cap.read()
-        if not ret:
-            break
+    try:
+        while True:
+            if cancel_flag and cancel_flag.is_set():
+                break
 
-        processed, balls = tracker.process_frame(frame)
-        out.write(processed)
-        frame_idx += 1
+            ret, frame = cap.read()
+            if not ret:
+                break
 
-        if total_frames > 0 and frame_idx % 30 == 0:
-            pct = int((frame_idx / total_frames) * 100)
-            ball_count = len(balls)
-            progress_callback(
-                f"Frame {frame_idx}/{total_frames} - {ball_count} balls | "
-                f"Shots: {tracker.stats.total_shots} | Pots: {tracker.stats.total_pots}",
-                pct,
-            )
+            processed, balls = tracker.process_frame(frame)
+            out.write(processed)
+            frame_idx += 1
+
+            if show_preview:
+                cv2.imshow(window_name, processed)
+                key = cv2.waitKey(1) & 0xFF
+                if key in (ord("q"), ord("Q"), 27):
+                    break
+
+            if total_frames > 0 and frame_idx % 30 == 0:
+                pct = int((frame_idx / total_frames) * 100)
+                ball_count = len(balls)
+                progress_callback(
+                    f"Frame {frame_idx}/{total_frames} - {ball_count} balls | "
+                    f"Shots: {tracker.stats.total_shots} | Pots: {tracker.stats.total_pots}",
+                    pct,
+                )
+    finally:
+        if show_preview:
+            cv2.destroyAllWindows()
 
     cap.release()
     out.release()
